@@ -27,13 +27,16 @@ class Encoder(chainer.Chain):
             c=L.Convolution2D(16, 64, 5, stride=2),
             d=L.Convolution2D(64, 128, 2),
             e=L.Convolution2D(128, 256, 2),
+            bn0=L.BatchNormalization(3),
+            bn1=L.BatchNormalization(16),
             out_mu=L.Linear(256, k),
             out_sigma=L.Linear(256, k),
         )
 
     def __call__(self, x):
         x = (x - 128) / 256
-        h1 = F.elu(self.a2(self.a1(x)))
+        x = self.bn0(x)
+        h1 = F.elu(self.bn1(self.a2(self.a1(x))))
         h2 = F.average_pooling_2d(self.b(x), 2)
         h = h1 * 0.8 + h2 * 0.2
         h = F.elu(self.c(h))
@@ -56,15 +59,11 @@ class Decoder(chainer.Chain):
             b=L.Deconvolution2D(64, 32, 4, stride=2),
             c=L.Deconvolution2D(32, 16, 5, stride=2),
             d=L.Deconvolution2D(16, 3, 4, stride=2),
-            bn1=L.BatchNormalization(128),
-            bn2=L.BatchNormalization(64),
         )
 
     def __call__(self, z):
         h = F.reshape(self.lin(z), (z.data.shape[0], 128, 2, 2))
-        h = self.bn1(h)
         h = F.elu(self.a(h))
-        h = self.bn2(h)
         h = F.elu(self.b(h))
         h = F.elu(self.c(h))
         h = F.elu(self.d(h))
