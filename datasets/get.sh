@@ -21,8 +21,8 @@ for id in `friends $ME`; do
     wget -nc `icon $id`
     for id2 in `friends $id`; do
         wget -nc `icon $id2`
-        sleep 5
+        sleep 10
     done
     echo -n .
-    sleep 80
+    sleep 120
 done
