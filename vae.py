@@ -5,6 +5,7 @@ import chainer.links as L
 import glob
 import numpy
 from PIL import Image
+from imagedataset import ImageDataset
 
 
 parser = argparse.ArgumentParser()
@@ -106,7 +107,7 @@ def save_as_image(x, filename):
 
 
 images = glob.glob('./datasets/*.jpg')
-all_ds = chainer.datasets.ImageDataset(images)
+all_ds = ImageDataset(images)
 all_iter = chainer.iterators.SerialIterator(all_ds, 32)
 
 model = VAE()
