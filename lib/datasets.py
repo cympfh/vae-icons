@@ -30,7 +30,7 @@ class ImageDataset(dataset_mixin.DatasetMixin):
             image = numpy.concatenate((image, image, image), axis=2)
 
         if randrange(0, 2) == 0:
-            image = image[::-1, :, :]
+            image = image[:, ::-1, :]
 
         image = image.transpose(2, 0, 1)
         if image.shape != (3, 48, 48):
