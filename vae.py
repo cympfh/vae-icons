@@ -1,3 +1,4 @@
+import argparse
 import chainer
 import chainer.functions as F
 import chainer.links as L
@@ -6,14 +7,16 @@ import numpy
 from PIL import Image
 
 
-images = glob.glob('./datasets/*.gif')
-images += glob.glob('./datasets/*.jpeg')
-images += glob.glob('./datasets/*.jpg')
-images += glob.glob('./datasets/*.png')
+parser = argparse.ArgumentParser()
+parser.add_argument('--gpu', type=int, default=-1)
+args = parser.parse_args()
 
-images = [ './datasets/02CU3_Kw_normal.jpeg' ] * 20
 
-all_ds = chainer.datasets.ImageDataset(images)
+xp = numpy
+
+if args.gpu > -1:
+    xp = chainer.cuda.cupy
+    chainer.cuda.get_device(args.gpu).use()
 
 
 class Encoder(chainer.Chain):
@@ -82,33 +85,36 @@ class VAE(chainer.Chain):
     def __call__(self, x):
         mu, sigma = self.enc(x)
         loss_kl = F.gaussian_kl_divergence(mu, sigma)
-        z = mu + numpy.random.normal() * F.exp(-sigma / 2)  # random sampling
+        z = mu + xp.random.normal() * F.exp(-sigma / 2)  # random sampling
         x_hat = self.dec(z)
         loss_decode = F.mean_squared_error(x, x_hat)
         loss = loss_kl + loss_decode
         print(loss_kl.data, loss_decode.data)
-        return loss, x_hat
+        return loss
 
 
 def save_as_image(x, filename):
     if isinstance(x, chainer.Variable):
         x = x.data
+    if isinstance(x, chainer.cuda.cupy.ndarray):
+        x = chainer.cuda.to_cpu(x)
     data = (x * 256).reshape((3, 48, 48)).transpose(2, 1, 0)
     data = data.astype(numpy.uint8)
     data = Image.fromarray(data)
     data.save(filename)
 
 
+
+images = glob.glob('./datasets/*.jpg')
+all_ds = chainer.datasets.ImageDataset(images)
+all_iter = chainer.iterators.SerialIterator(all_ds, 32)
+
 model = VAE()
+if args.gpu > -1:
+    model.to_gpu()
 opt = chainer.optimizers.Adam()
 opt.setup(model)
-x = chainer.Variable(numpy.array(all_ds))
 
-for _ in range(200):
-    loss, x = model(x)
-    model.zerograds()
-    loss.backward()
-    opt.update()
-    del loss
-    if _ % 10 == 0:
-        save_as_image(x.data[0], "{:03d}.png".format(_))
+updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
+trainer = chainer.training.Trainer(updater, (20, 'epoch'), out='result')
+trainer.run()
