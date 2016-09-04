@@ -32,4 +32,7 @@ class ImageDataset(dataset_mixin.DatasetMixin):
         if randrange(0, 2) == 0:
             image = image[:, ::-1, :]
 
-        return image.transpose(2, 0, 1)
+        image = image.transpose(2, 0, 1)
+        if image.shape != (3, 48, 48):
+            print(path, image.shape)
+        return image
