@@ -4,8 +4,9 @@ import chainer.functions as F
 import chainer.links as L
 import glob
 import numpy
+import lib.datasets
+import lib.training
 from PIL import Image
-from imagedataset import ImageDataset
 
 
 parser = argparse.ArgumentParser()
@@ -38,7 +39,6 @@ class Encoder(chainer.Chain):
         )
 
     def __call__(self, x):
-        x = (x - 128) / 256
         x = self.bn0(x)
         h1 = F.elu(self.bn1(self.a2(self.a1(x))))
         h2 = F.average_pooling_2d(self.b(x), 2)
@@ -70,7 +70,7 @@ class Decoder(chainer.Chain):
         h = F.elu(self.a(h))
         h = F.elu(self.b(h))
         h = F.elu(self.c(h))
-        h = F.elu(self.d(h))
+        h = F.relu(self.d(h))
         return h
 
 
@@ -86,36 +86,43 @@ class VAE(chainer.Chain):
     def __call__(self, x):
         mu, sigma = self.enc(x)
         loss_kl = F.gaussian_kl_divergence(mu, sigma)
-        z = mu + xp.random.normal() * F.exp(-sigma / 2)  # random sampling
+        z = mu + xp.random.normal(size=sigma.data.shape) * F.exp(-sigma / 2)  # random sampling
         x_hat = self.dec(z)
         loss_decode = F.mean_squared_error(x, x_hat)
         loss = loss_kl + loss_decode
         print(loss_kl.data, loss_decode.data)
+        # print('x ', x.data[0][0][0][20:30])
+        # print('x_', x_hat.data[0][0][0][20:30])
         return loss
 
 
-def save_as_image(x, filename):
-    if isinstance(x, chainer.Variable):
-        x = x.data
-    if isinstance(x, chainer.cuda.cupy.ndarray):
-        x = chainer.cuda.to_cpu(x)
-    data = (x * 256).reshape((3, 48, 48)).transpose(2, 1, 0)
-    data = data.astype(numpy.uint8)
-    data = Image.fromarray(data)
-    data.save(filename)
+if __name__ == '__main__':
+
+    k = 100
+
+    def test(t):
+        z = chainer.Variable(xp.random.normal(size=(1, k)).astype(numpy.float32))
+        x = model.dec(z) * 256
+        data = x.data[0].transpose(2, 1, 0)
+        data = data.astype(numpy.uint8)
+        data = chainer.cuda.to_cpu(data)
+        data = Image.fromarray(data)
+        data.save("{:03d}.png".format(t))
 
 
+    images = glob.glob('./datasets/*.jpg')
+    all_ds = lib.datasets.ImageDataset(images)
+    all_iter = chainer.iterators.SerialIterator(all_ds, 64, shuffle=False)
 
-images = glob.glob('./datasets/*.jpg')
-all_ds = ImageDataset(images)
-all_iter = chainer.iterators.SerialIterator(all_ds, 32)
+    model = VAE(k)
 
-model = VAE()
-if args.gpu > -1:
-    model.to_gpu()
-opt = chainer.optimizers.Adam()
-opt.setup(model)
+    if args.gpu > -1:
+        model.to_gpu()
 
-updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
-trainer = chainer.training.Trainer(updater, (20, 'epoch'), out='result')
-trainer.run()
+    opt = chainer.optimizers.Adam()
+    opt.setup(model)
+
+    updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
+    trainer = chainer.training.Trainer(updater, (800, 'epoch'), out='result')
+    trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(1, 'epoch'))
+    trainer.run()
