@@ -39,7 +39,6 @@ class Encoder(chainer.Chain):
         )
 
     def __call__(self, x):
-        x = (x - 128) / 256
         x = self.bn0(x)
         h1 = F.elu(self.bn1(self.a2(self.a1(x))))
         h2 = F.average_pooling_2d(self.b(x), 2)
@@ -71,7 +70,7 @@ class Decoder(chainer.Chain):
         h = F.elu(self.a(h))
         h = F.elu(self.b(h))
         h = F.elu(self.c(h))
-        h = F.elu(self.d(h))
+        h = F.relu(self.d(h))
         return h
 
 
@@ -92,31 +91,38 @@ class VAE(chainer.Chain):
         loss_decode = F.mean_squared_error(x, x_hat)
         loss = loss_kl + loss_decode
         print(loss_kl.data, loss_decode.data)
+        # print('x ', x.data[0][0][0][20:30])
+        # print('x_', x_hat.data[0][0][0][20:30])
         return loss
 
 
-def test(t):
+if __name__ == '__main__':
+
     k = 100
-    z = chainer.Variable(xp.random.normal(size=(1, k)).astype(numpy.float32))
-    x = model.dec(z)
-    data = x.data[0].transpose(2, 1, 0)
-    data = data.astype(numpy.uint8)
-    data = chainer.cuda.to_cpu(data)
-    data = Image.fromarray(data)
-    data.save("{:03d}.png".format(t))
+
+    def test(t):
+        z = chainer.Variable(xp.random.normal(size=(1, k)).astype(numpy.float32))
+        x = model.dec(z) * 256
+        data = x.data[0].transpose(2, 1, 0)
+        data = data.astype(numpy.uint8)
+        data = chainer.cuda.to_cpu(data)
+        data = Image.fromarray(data)
+        data.save("{:03d}.png".format(t))
 
 
-images = glob.glob('./datasets/*.jpg')[0:2]
-all_ds = lib.datasets.ImageDataset(images)
-all_iter = chainer.iterators.SerialIterator(all_ds, 32)
+    images = glob.glob('./datasets/*.jpg')
+    all_ds = lib.datasets.ImageDataset(images)
+    all_iter = chainer.iterators.SerialIterator(all_ds, 64, shuffle=False)
 
-model = VAE()
-if args.gpu > -1:
-    model.to_gpu()
-opt = chainer.optimizers.Adam()
-opt.setup(model)
+    model = VAE(k)
 
-updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
-trainer = chainer.training.Trainer(updater, (20, 'epoch'), out='result')
-trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(1, 'epoch'))
-trainer.run()
+    if args.gpu > -1:
+        model.to_gpu()
+
+    opt = chainer.optimizers.Adam()
+    opt.setup(model)
+
+    updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
+    trainer = chainer.training.Trainer(updater, (800, 'epoch'), out='result')
+    trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(1, 'epoch'))
+    trainer.run()
