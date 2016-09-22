@@ -111,6 +111,8 @@ if __name__ == '__main__':
 
 
     images = glob.glob('./datasets/*.jpg')
+    images += glob.glob('./datasets/*.png')
+    images += glob.glob('./datasets/*.gif')
     all_ds = lib.datasets.ImageDataset(images)
     all_iter = chainer.iterators.SerialIterator(all_ds, 64, shuffle=False)
 

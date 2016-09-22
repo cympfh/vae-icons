@@ -23,7 +23,8 @@ class ImageDataset(dataset_mixin.DatasetMixin):
     def get_example(self, i):
         path = os.path.join(self._root, self._paths[i])
         with Image.open(path) as f:
-            image = numpy.asarray(f, dtype=self._dtype)
+            g = f.resize((48, 48))
+            image = numpy.asarray(g, dtype=self._dtype)
 
         if image.ndim == 2:
             image = image.reshape((image.shape[0], image.shape[1], 1))
@@ -33,6 +34,9 @@ class ImageDataset(dataset_mixin.DatasetMixin):
 
         if randrange(0, 2) == 0:
             image = image[:, :, ::-1]
+
+        if image.shape == (4, 48, 48):
+            image = image[0:3, :, :]
 
         if image.shape != (3, 48, 48):
             print(path, image.shape)
