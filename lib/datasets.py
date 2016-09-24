@@ -1,4 +1,5 @@
 import os
+import sys
 import numpy
 from PIL import Image
 from random import randrange
@@ -23,23 +24,21 @@ class ImageDataset(dataset_mixin.DatasetMixin):
     def get_example(self, i):
         path = os.path.join(self._root, self._paths[i])
         with Image.open(path) as f:
-            g = f.resize((48, 48))
-            image = numpy.asarray(g, dtype=self._dtype)
+            f = f.resize((48, 48))
+            image = numpy.asarray(f, dtype=self._dtype)
 
         if image.ndim == 2:
             image = image.reshape((image.shape[0], image.shape[1], 1))
             image = numpy.concatenate((image, image, image), axis=2)
 
-        image = image.transpose(2, 1, 0)  # (width, height, ch) => (ch, height, width)
-
-        if randrange(0, 2) == 0:
-            image = image[:, :, ::-1]
+        image = image.transpose(2, 0, 1)  # (height, width, ch) => (ch, height, width)
 
         if image.shape == (4, 48, 48):
             image = image[0:3, :, :]
 
         if image.shape != (3, 48, 48):
-            print(path, image.shape)
+            sys.stderr.write("[ERR] {} has no proper shape (Actual={})".format(path, image.shape))
+            raise
 
         image = image / 256
 

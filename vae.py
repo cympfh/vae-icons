@@ -2,15 +2,21 @@ import argparse
 import chainer
 import chainer.functions as F
 import chainer.links as L
+import chainer.training.extensions
 import glob
 import numpy
+import sys
+from PIL import Image
+
 import lib.datasets
 import lib.training
-from PIL import Image
+import lib.debug
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=int, default=-1)
+parser.add_argument('--save', action='store_true', help="model save per 10epoch")
+parser.add_argument('--skip-validation', action='store_true', help="skip validation")
 args = parser.parse_args()
 
 
@@ -23,98 +29,140 @@ if args.gpu > -1:
 
 class Encoder(chainer.Chain):
 
-    def __init__(self, k=100):
+    def __init__(self, k):
         """ k = dim(z) """
         super().__init__(
-            a1=L.Convolution2D(3, 16, (5, 1), stride=(2, 1), pad=(2, 0)),
-            a2=L.Convolution2D(16, 16, (1, 5), stride=(1, 2), pad=(0, 2)),
-            b=L.Convolution2D(3, 16, 1),
-            c=L.Convolution2D(16, 64, 5, stride=2),
-            d=L.Convolution2D(64, 128, 2),
-            e=L.Convolution2D(128, 256, 2),
-            bn0=L.BatchNormalization(3),
+            c1=L.Convolution2D(3, 16, 4, stride=2),
+            c2=L.Convolution2D(16, 32, 5, stride=2),
+            c3=L.Convolution2D(32, 64, 4, stride=2),
+            c4=L.Convolution2D(64, 128, 4, stride=2, pad=1),
             bn1=L.BatchNormalization(16),
-            out_mu=L.Linear(256, k),
-            out_sigma=L.Linear(256, k),
+            bn2=L.BatchNormalization(32),
+            bn3=L.BatchNormalization(64),
+            out_mu=L.Linear(512, k),
+            out_var=L.Linear(512, k),
         )
 
-    def __call__(self, x):
-        x = self.bn0(x)
-        h1 = F.elu(self.bn1(self.a2(self.a1(x))))
-        h2 = F.average_pooling_2d(self.b(x), 2)
-        h = h1 * 0.8 + h2 * 0.2
-        h = F.elu(self.c(h))
-        h = F.elu(self.d(h))
-        h = F.tanh(self.e(h))
-        h = F.average_pooling_2d(h, 8)
+    def __call__(self, x, test=False):
+        h = self.bn1(F.elu(self.c1(x)), test=test)
+        h = self.bn2(F.elu(self.c2(h)), test=test)
+        h = self.bn3(F.elu(self.c3(h)), test=test)
+        h = F.elu(self.c4(h))
         mu = self.out_mu(h)
-        sigma = self.out_sigma(h)
-        return mu, sigma
+        var = self.out_var(h)
+        return mu, var
 
 
 class Decoder(chainer.Chain):
 
-    def __init__(self, k=100):
+    def __init__(self, k):
         """ k = dim(z) """
         self.k = k
         super().__init__(
-            lin=L.Linear(k, 128 * 2 * 2, wscale=0.001),
-            a=L.Deconvolution2D(128, 64, 4, stride=2, pad=1),
-            b=L.Deconvolution2D(64, 32, 4, stride=2),
-            c=L.Deconvolution2D(32, 16, 5, stride=2),
-            d=L.Deconvolution2D(16, 3, 4, stride=2),
+            lin=L.Linear(k, 128 * 2 * 2),
+            dc1=L.Deconvolution2D(128, 64, 4, stride=2, pad=1),
+            dc2=L.Deconvolution2D(64, 32, 4, stride=2),
+            dc3=L.Deconvolution2D(32, 16, 5, stride=2),
+            dc4=L.Deconvolution2D(16, 3, 4, stride=2),
+            bn1=L.BatchNormalization(64),
+            bn2=L.BatchNormalization(32),
+            bn3=L.BatchNormalization(16),
         )
 
-    def __call__(self, z):
+    def __call__(self, z, test=False):
         h = F.reshape(self.lin(z), (z.data.shape[0], 128, 2, 2))
-        h = F.elu(self.a(h))
-        h = F.elu(self.b(h))
-        h = F.elu(self.c(h))
-        h = F.relu(self.d(h))
-        return h
+        h = self.bn1(F.elu(self.dc1(h)), test=test)
+        h = self.bn2(F.elu(self.dc2(h)), test=test)
+        h = self.bn3(F.elu(self.dc3(h)), test=test)
+        x = F.sigmoid(self.dc4(h))
+        return x
 
 
 class VAE(chainer.Chain):
 
-    def __init__(self, k=100):
+    def __init__(self, k=512):
         self.k = k
         super().__init__(
             enc=Encoder(k),
             dec=Decoder(k)
         )
 
-    def __call__(self, x):
-        mu, sigma = self.enc(x)
-        loss_kl = F.gaussian_kl_divergence(mu, sigma)
-        z = mu + xp.random.normal(size=sigma.data.shape) * F.exp(-sigma / 2)  # random sampling
-        x_hat = self.dec(z)
-        loss_decode = F.mean_squared_error(x, x_hat)
-        loss = loss_kl + loss_decode
+    def __call__(self, x, test=False, k=32):
+
+        mu, var = self.enc(x, test)
+        loss_kl = F.gaussian_kl_divergence(mu, var) / k
+
+        loss_decode = 0
+        for _ in range(k):
+            z = F.gaussian(mu, var)
+            x_hat = self.dec(z, test)
+            loss_decode += F.mean_squared_error(x, x_hat)
+            # loss_decode += F.bernoulli_nll(x, x_hat)
+
         print(loss_kl.data, loss_decode.data)
-        # print('x ', x.data[0][0][0][20:30])
-        # print('x_', x_hat.data[0][0][0][20:30])
-        return loss
+
+        if not test:
+            print('x', lib.debug.show(x.data[0][0][20]))
+            print('m', lib.debug.show(mu.data[0]))
+            print('v', lib.debug.show(var.data[0]))
+            print('z', lib.debug.show(z.data[0]))
+            print('x', lib.debug.show(x_hat.data[0][0][20]))
+
+        return loss_kl * 0.001 + loss_decode
 
 
 if __name__ == '__main__':
 
     k = 100
 
+    test_ds = lib.datasets.ImageDataset(['./datasets/cympfh.png'])
+
     def test(t):
-        z = chainer.Variable(xp.random.normal(size=(1, k)).astype(numpy.float32))
-        x = model.dec(z) * 256
-        data = x.data[0].transpose(2, 1, 0)
+        """test generating"""
+        x = xp.array(test_ds[0]).reshape(1, 3, 48, 48).astype('f')
+        z, _ = model.enc(x, test=True)
+        x = model.dec(z, test=True).data * 256
+        data = x[0].transpose(1, 2, 0)
         data = data.astype(numpy.uint8)
         data = chainer.cuda.to_cpu(data)
         data = Image.fromarray(data)
-        data.save("{:03d}.png".format(t))
+        data.save("ae.{:03d}.png".format(t))
+
+        z = chainer.Variable(xp.random.normal(size=(1, k)).astype('f'))
+        x = model.dec(z, test=True).data * 256
+        data = x[0].transpose(1, 2, 0)
+        data = data.astype(numpy.uint8)
+        data = chainer.cuda.to_cpu(data)
+        data = Image.fromarray(data)
+        data.save("rand.{:03d}.png".format(t))
+
+
+    def save(t):
+        """save the model"""
+        filename = "model.{:03d}.npz".format(t)
+        chainer.serializers.save_npz(filename, model)
 
 
     images = glob.glob('./datasets/*.jpg')
     images += glob.glob('./datasets/*.png')
     images += glob.glob('./datasets/*.gif')
+    # images = images[-256:]
     all_ds = lib.datasets.ImageDataset(images)
-    all_iter = chainer.iterators.SerialIterator(all_ds, 64, shuffle=False)
+
+    # validation
+    if not args.skip_validation:
+        sys.stderr.write("data validation...\n")
+        for i in range(len(images)):
+            sys.stderr.write("\r {} / {}   ".format(i + 1, len(images)))
+            try:
+                img = all_ds.get_example(i)
+            except:
+                sys.stderr.write("\n[ERR] <path={} index={}> has wrong".format(images[i], i))
+                sys.exit()
+        sys.stderr.write("ok\n")
+
+    batch_size = 128
+    all_iter = chainer.iterators.SerialIterator(all_ds, batch_size, shuffle=False)
 
     model = VAE(k)
 
@@ -125,6 +173,10 @@ if __name__ == '__main__':
     opt.setup(model)
 
     updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
-    trainer = chainer.training.Trainer(updater, (800, 'epoch'), out='result')
-    trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(1, 'epoch'))
+    trainer = chainer.training.Trainer(updater, (1000, 'epoch'), out='result')
+    trainer.extend(chainer.training.extensions.LinearShift('alpha', (0.002, 0.0001), (2, 3000)))
+    trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(100, 'iteration'))
+    if args.save:
+        trainer.extend(lib.training.Evaluate(evalfunc=save), trigger=(100, 'epoch'))
+
     trainer.run()
