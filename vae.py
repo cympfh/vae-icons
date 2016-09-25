@@ -74,7 +74,7 @@ class Decoder(chainer.Chain):
         h = self.bn1(F.elu(self.dc1(h)), test=test)
         h = self.bn2(F.elu(self.dc2(h)), test=test)
         h = self.bn3(F.elu(self.dc3(h)), test=test)
-        x = F.sigmoid(self.dc4(h))
+        x = self.dc4(h)
         return x
 
 
@@ -87,28 +87,28 @@ class VAE(chainer.Chain):
             dec=Decoder(k)
         )
 
-    def __call__(self, x, test=False, k=32):
+    def __call__(self, x, test=False, k=4):
 
         mu, var = self.enc(x, test)
-        loss_kl = F.gaussian_kl_divergence(mu, var) / k
+        loss_kl = F.gaussian_kl_divergence(mu, var) / self.k
 
         loss_decode = 0
         for _ in range(k):
             z = F.gaussian(mu, var)
             x_hat = self.dec(z, test)
-            loss_decode += F.mean_squared_error(x, x_hat)
-            # loss_decode += F.bernoulli_nll(x, x_hat)
+            loss_decode += F.mean_squared_error(x, x_hat) / k
+            # loss_decode += F.bernoulli_nll(x, x_hat) / k
 
         print(loss_kl.data, loss_decode.data)
 
         if not test:
-            print('x', lib.debug.show(x.data[0][0][20]))
-            print('m', lib.debug.show(mu.data[0]))
-            print('v', lib.debug.show(var.data[0]))
-            print('z', lib.debug.show(z.data[0]))
-            print('x', lib.debug.show(x_hat.data[0][0][20]))
+            print('m ', lib.debug.show(mu.data[0]))
+            print('v ', lib.debug.show(var.data[0]))
+            # print('z ', lib.debug.show(z.data[0]))
+            print('x ', lib.debug.show(x.data[0][0][20]))
+            print('x_', lib.debug.show(x_hat.data[0][0][20]))
 
-        return loss_kl * 0.001 + loss_decode
+        return loss_kl * 0.0002 + loss_decode
 
 
 if __name__ == '__main__':
@@ -143,10 +143,10 @@ if __name__ == '__main__':
         chainer.serializers.save_npz(filename, model)
 
 
-    images = glob.glob('./datasets/*.jpg')
+    images = []
+    images += glob.glob('./datasets/*.jpg')
     images += glob.glob('./datasets/*.png')
     images += glob.glob('./datasets/*.gif')
-    # images = images[-256:]
     all_ds = lib.datasets.ImageDataset(images)
 
     # validation
@@ -162,7 +162,7 @@ if __name__ == '__main__':
         sys.stderr.write("ok\n")
 
     batch_size = 128
-    all_iter = chainer.iterators.SerialIterator(all_ds, batch_size, shuffle=False)
+    all_iter = chainer.iterators.SerialIterator(all_ds, batch_size)
 
     model = VAE(k)
 
