@@ -15,11 +15,10 @@ pip3 install chainer Pillow
 
 ## datasets
 
-datasets/get.sh
-
 ```bash
+mkdir datasets
 cd datasets
-./get.sh $TWITTER_SCREEN_NAME
+bash ../get.sh $TWITTER_SCREEN_NAME
 ```
 
 ## vae.py

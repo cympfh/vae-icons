@@ -1,22 +1,22 @@
 import argparse
 import chainer
 import chainer.functions as F
-import chainer.links as L
-import chainer.training.extensions
 import glob
 import numpy
 import sys
 from PIL import Image
+from chainer.training import extensions
 
 import lib.datasets
 import lib.training
 import lib.debug
+from net.encoder import Encoder
+from net.gen import Generator
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--gpu', type=int, default=-1)
-parser.add_argument('--save', action='store_true', help="model save per 10epoch")
-parser.add_argument('--skip-validation', action='store_true', help="skip validation")
+parser.add_argument('--skip-validation', action='store_true')
 args = parser.parse_args()
 
 
@@ -27,93 +27,48 @@ if args.gpu > -1:
     chainer.cuda.get_device(args.gpu).use()
 
 
-class Encoder(chainer.Chain):
-
-    def __init__(self, k):
-        """ k = dim(z) """
-        super().__init__(
-            c1=L.Convolution2D(3, 16, 4, stride=2),
-            c2=L.Convolution2D(16, 32, 5, stride=2),
-            c3=L.Convolution2D(32, 64, 4, stride=2),
-            c4=L.Convolution2D(64, 128, 4, stride=2, pad=1),
-            bn1=L.BatchNormalization(16),
-            bn2=L.BatchNormalization(32),
-            bn3=L.BatchNormalization(64),
-            out_mu=L.Linear(512, k),
-            out_var=L.Linear(512, k),
-        )
-
-    def __call__(self, x, test=False):
-        h = self.bn1(F.elu(self.c1(x)), test=test)
-        h = self.bn2(F.elu(self.c2(h)), test=test)
-        h = self.bn3(F.elu(self.c3(h)), test=test)
-        h = F.elu(self.c4(h))
-        mu = self.out_mu(h)
-        var = self.out_var(h)
-        return mu, var
-
-
-class Decoder(chainer.Chain):
-
-    def __init__(self, k):
-        """ k = dim(z) """
-        self.k = k
-        super().__init__(
-            lin=L.Linear(k, 128 * 2 * 2),
-            dc1=L.Deconvolution2D(128, 64, 4, stride=2, pad=1),
-            dc2=L.Deconvolution2D(64, 32, 4, stride=2),
-            dc3=L.Deconvolution2D(32, 16, 5, stride=2),
-            dc4=L.Deconvolution2D(16, 3, 4, stride=2),
-            bn1=L.BatchNormalization(64),
-            bn2=L.BatchNormalization(32),
-            bn3=L.BatchNormalization(16),
-        )
-
-    def __call__(self, z, test=False):
-        h = F.reshape(self.lin(z), (z.data.shape[0], 128, 2, 2))
-        h = self.bn1(F.elu(self.dc1(h)), test=test)
-        h = self.bn2(F.elu(self.dc2(h)), test=test)
-        h = self.bn3(F.elu(self.dc3(h)), test=test)
-        x = self.dc4(h)
-        return x
-
-
 class VAE(chainer.Chain):
 
     def __init__(self, k=512):
         self.k = k
         super().__init__(
             enc=Encoder(k),
-            dec=Decoder(k)
+            dec=Generator(k)
         )
 
     def __call__(self, x, test=False, k=4):
 
-        mu, var = self.enc(x, test)
-        loss_kl = F.gaussian_kl_divergence(mu, var) / self.k
+        batch_size = x.data.shape[0]
+        z_mu, z_var = self.enc(x, test)
+        loss_kl = F.gaussian_kl_divergence(z_mu, z_var) / batch_size / self.k
 
         loss_decode = 0
         for _ in range(k):
-            z = F.gaussian(mu, var)
-            x_hat = self.dec(z, test)
-            loss_decode += F.mean_squared_error(x, x_hat) / k
-            # loss_decode += F.bernoulli_nll(x, x_hat) / k
+            z = F.gaussian(z_mu, z_var)
+            x_ = self.dec(z, test)
+            loss_decode += F.mean_squared_error(x, x_) / k
 
         print(loss_kl.data, loss_decode.data)
 
         if not test:
-            print('m ', lib.debug.show(mu.data[0]))
-            print('v ', lib.debug.show(var.data[0]))
+            print('z_m', lib.debug.show(z_mu.data[0]))
+            print('z_v', lib.debug.show(z_var.data[0]))
             # print('z ', lib.debug.show(z.data[0]))
-            print('x ', lib.debug.show(x.data[0][0][20]))
-            print('x_', lib.debug.show(x_hat.data[0][0][20]))
+            print('x  ', lib.debug.show(x.data[0][0][20]))
+            print('x_ ', lib.debug.show(x_.data[0][0][20]))
 
+        chainer.report({
+            'loss_kl': loss_kl,
+            'loss_decode': loss_decode
+            }, self)
+
+        return loss_kl + loss_decode * 0.1
         return loss_kl * 0.0002 + loss_decode
 
 
 if __name__ == '__main__':
 
-    k = 100
+    k = 300
 
     test_ds = lib.datasets.ImageDataset(['./datasets/cympfh.png'])
 
@@ -136,15 +91,8 @@ if __name__ == '__main__':
         data = Image.fromarray(data)
         data.save("rand.{:03d}.png".format(t))
 
-
-    def save(t):
-        """save the model"""
-        filename = "model.{:03d}.npz".format(t)
-        chainer.serializers.save_npz(filename, model)
-
-
     images = []
-    images += glob.glob('./datasets/*.jpg')
+    # images += glob.glob('./datasets/*.jpg')
     images += glob.glob('./datasets/*.png')
     images += glob.glob('./datasets/*.gif')
     all_ds = lib.datasets.ImageDataset(images)
@@ -157,7 +105,8 @@ if __name__ == '__main__':
             try:
                 img = all_ds.get_example(i)
             except:
-                sys.stderr.write("\n[ERR] <path={} index={}> has wrong".format(images[i], i))
+                sys.stderr.write("\n[ERR] <path={} index={}> has wrong".format(
+                    images[i], i))
                 sys.exit()
         sys.stderr.write("ok\n")
 
@@ -173,10 +122,12 @@ if __name__ == '__main__':
     opt.setup(model)
 
     updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
-    trainer = chainer.training.Trainer(updater, (1000, 'epoch'), out='result')
-    trainer.extend(chainer.training.extensions.LinearShift('alpha', (0.002, 0.0001), (2, 3000)))
-    trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(100, 'iteration'))
-    if args.save:
-        trainer.extend(lib.training.Evaluate(evalfunc=save), trigger=(100, 'epoch'))
+    trainer = chainer.training.Trainer(updater, (10000, 'epoch'))
+    trainer.extend(lib.training.Evaluate(evalfunc=test),
+                   trigger=(100, 'iteration'))
+    trainer.extend(extensions.LogReport(trigger=(100, 'iteration')))
+    trainer.extend(extensions.PrintReport([
+        'main/loss_kl', 'main/loss_decode',
+        'validation/main/loss_kl', 'validation/main/loss_decode']))
 
     trainer.run()
