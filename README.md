@@ -1,25 +1,8 @@
-# Variational Autoencoder on Twitter-profile-images
+# Variational Autoencoder for profile-images
 
-## Requirements
+## dataset
 
-- twurl
-- jq
-- Python3
-    - chainer, PIL
-
-```bash
-apt-get install jq
-git clone git@github.com:twitter/twurl
-pip3 install chainer Pillow
-```
-
-## datasets
-
-```bash
-mkdir datasets
-cd datasets
-bash ../get.sh $TWITTER_SCREEN_NAME
-```
+64x64 images in `dataset/`
 
 ## vae.py
 
