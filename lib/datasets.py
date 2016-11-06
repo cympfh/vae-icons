@@ -2,7 +2,6 @@ import os
 import sys
 import numpy
 from PIL import Image
-from random import randrange
 from chainer.dataset import dataset_mixin
 
 
@@ -12,6 +11,8 @@ class ImageDataset(dataset_mixin.DatasetMixin):
     GrayScale image -> 3channel
     horizontal flip
     """
+
+    w = 64
 
     def __init__(self, paths, root='.', dtype=numpy.float32):
         self._paths = paths
@@ -24,7 +25,7 @@ class ImageDataset(dataset_mixin.DatasetMixin):
     def get_example(self, i):
         path = os.path.join(self._root, self._paths[i])
         with Image.open(path) as f:
-            f = f.resize((48, 48))
+            f = f.resize((self.w, self.w))
             image = numpy.asarray(f, dtype=self._dtype)
 
         if image.ndim == 2:
@@ -33,13 +34,13 @@ class ImageDataset(dataset_mixin.DatasetMixin):
 
         image = image.transpose(2, 0, 1)  # (height, width, ch) => (ch, height, width)
 
-        if image.shape == (4, 48, 48):
+        if image.shape == (4, self.w, self.w):
             image = image[0:3, :, :]
 
-        if image.shape != (3, 48, 48):
+        if image.shape != (3, self.w, self.w):
             sys.stderr.write("[ERR] {} has no proper shape (Actual={})".format(path, image.shape))
             raise
 
-        image = image / 256
+        image = image.astype('i')
 
         return image

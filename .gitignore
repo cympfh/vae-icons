@@ -1,14 +1,4 @@
 __pycache__
-datasets/
+dataset
 result/
-*.bmp
-*.gif
-*.jpeg
-*.jpg
-*.png
-*.BMP
-*.GIF
-*.JPEG
-*.JPG
-*.PNG
-*_normal
+*.sh

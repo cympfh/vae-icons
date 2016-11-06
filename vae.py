@@ -3,6 +3,7 @@ import chainer
 import chainer.functions as F
 import glob
 import numpy
+import random
 import sys
 from PIL import Image
 from chainer.training import extensions
@@ -39,62 +40,78 @@ class VAE(chainer.Chain):
     def __call__(self, x, test=False, k=4):
 
         batch_size = x.data.shape[0]
+        w = x.data.shape[2]
+        tr, tg, tb = chainer.functions.split_axis(x, 3, 1)
+        tr = F.reshape(tr, (batch_size * w * w, ))
+        tg = F.reshape(tg, (batch_size * w * w, ))
+        tb = F.reshape(tb, (batch_size * w * w, ))
+
+        x = chainer.Variable(x.data.astype('f'))
+
         z_mu, z_var = self.enc(x, test)
         loss_kl = F.gaussian_kl_divergence(z_mu, z_var) / batch_size / self.k
 
         loss_decode = 0
         for _ in range(k):
             z = F.gaussian(z_mu, z_var)
-            x_ = self.dec(z, test)
-            loss_decode += F.mean_squared_error(x, x_) / k
-
-        print(loss_kl.data, loss_decode.data)
-
-        if not test:
-            print('z_m', lib.debug.show(z_mu.data[0]))
-            print('z_v', lib.debug.show(z_var.data[0]))
-            # print('z ', lib.debug.show(z.data[0]))
-            print('x  ', lib.debug.show(x.data[0][0][20]))
-            print('x_ ', lib.debug.show(x_.data[0][0][20]))
+            r, g, b = self.dec(z, test)
+            r = F.transpose(r, (0, 2, 3, 1))
+            r = F.reshape(r, (batch_size * w * w, 256))
+            g = F.transpose(g, (0, 2, 3, 1))
+            g = F.reshape(g, (batch_size * w * w, 256))
+            b = F.transpose(b, (0, 2, 3, 1))
+            b = F.reshape(b, (batch_size * w * w, 256))
+            loss_decode += F.softmax_cross_entropy(r, tr) / k
+            loss_decode += F.softmax_cross_entropy(g, tg) / k
+            loss_decode += F.softmax_cross_entropy(b, tb) / k
 
         chainer.report({
             'loss_kl': loss_kl,
             'loss_decode': loss_decode
             }, self)
 
-        return loss_kl + loss_decode * 0.1
-        return loss_kl * 0.0002 + loss_decode
+        beta = 0.2
+        return beta * loss_kl + (1 - beta) * loss_decode
 
 
 if __name__ == '__main__':
 
-    k = 300
+    k = 200
+    w = 64
 
-    test_ds = lib.datasets.ImageDataset(['./datasets/cympfh.png'])
+    test_ds = lib.datasets.ImageDataset(['./lib/cympfh.png'])
 
     def test(t):
         """test generating"""
-        x = xp.array(test_ds[0]).reshape(1, 3, 48, 48).astype('f')
+        x = xp.array(test_ds[0]).reshape(1, 3, w, w).astype('f')
         z, _ = model.enc(x, test=True)
-        x = model.dec(z, test=True).data * 256
-        data = x[0].transpose(1, 2, 0)
-        data = data.astype(numpy.uint8)
-        data = chainer.cuda.to_cpu(data)
-        data = Image.fromarray(data)
-        data.save("ae.{:03d}.png".format(t))
+        rgb = list(model.dec(z, test=True))
+        for j in range(3):
+            rgb[j] = F.transpose(rgb[j], (0, 2, 3, 1))
+            rgb[j] = F.reshape(rgb[j], (w * w, 256))
+            rgb[j] = numpy.argmax(rgb[j].data, axis=1)
+            rgb[j] = rgb[j].reshape((w, w))
+            rgb[j] = chainer.cuda.to_cpu(rgb[j])
+        img = numpy.stack(rgb, axis=2).astype(numpy.uint8)
+        img = Image.fromarray(img)
+        img.save("ae.png")
 
         z = chainer.Variable(xp.random.normal(size=(1, k)).astype('f'))
-        x = model.dec(z, test=True).data * 256
-        data = x[0].transpose(1, 2, 0)
-        data = data.astype(numpy.uint8)
-        data = chainer.cuda.to_cpu(data)
-        data = Image.fromarray(data)
-        data.save("rand.{:03d}.png".format(t))
+        rgb = list(model.dec(z, test=True))
+        for j in range(3):
+            rgb[j] = F.transpose(rgb[j], (0, 2, 3, 1))
+            rgb[j] = F.reshape(rgb[j], (w * w, 256))
+            rgb[j] = numpy.argmax(rgb[j].data, axis=1)
+            rgb[j] = rgb[j].reshape((w, w))
+            rgb[j] = chainer.cuda.to_cpu(rgb[j])
+        img = numpy.stack(rgb, axis=2).astype(numpy.uint8)
+        img = Image.fromarray(img)
+        img.save("rand.png")
 
-    images = []
-    # images += glob.glob('./datasets/*.jpg')
-    images += glob.glob('./datasets/*.png')
-    images += glob.glob('./datasets/*.gif')
+    print('load dataset')
+    images = glob.glob('./dataset/*.png')
+    print(len(images))
+    random.shuffle(images)
     all_ds = lib.datasets.ImageDataset(images)
 
     # validation
@@ -110,7 +127,7 @@ if __name__ == '__main__':
                 sys.exit()
         sys.stderr.write("ok\n")
 
-    batch_size = 128
+    batch_size = 32
     all_iter = chainer.iterators.SerialIterator(all_ds, batch_size)
 
     model = VAE(k)
@@ -121,13 +138,11 @@ if __name__ == '__main__':
     opt = chainer.optimizers.Adam()
     opt.setup(model)
 
+    m = 20
     updater = chainer.training.StandardUpdater(all_iter, opt, device=args.gpu)
-    trainer = chainer.training.Trainer(updater, (10000, 'epoch'))
-    trainer.extend(lib.training.Evaluate(evalfunc=test),
-                   trigger=(100, 'iteration'))
-    trainer.extend(extensions.LogReport(trigger=(100, 'iteration')))
-    trainer.extend(extensions.PrintReport([
-        'main/loss_kl', 'main/loss_decode',
-        'validation/main/loss_kl', 'validation/main/loss_decode']))
-
+    trainer = chainer.training.Trainer(updater, (1000, 'epoch'))
+    trainer.extend(lib.training.Evaluate(evalfunc=test), trigger=(m, 'iteration'))
+    trainer.extend(extensions.LogReport(trigger=(m, 'iteration')))
+    trainer.extend(extensions.PrintReport(['epoch', 'iteration', 'main/loss_kl', 'main/loss_decode']))
+    trainer.extend(extensions.snapshot_object(model, '{.updater.epoch}.npz'), trigger=(1, 'epoch'))
     trainer.run()
